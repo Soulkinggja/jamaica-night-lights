@@ -84,6 +84,23 @@ def zonal(g: gpd.GeoDataFrame, product: str, dates: list, variable: str) -> pd.D
     return pd.concat(rows, ignore_index=True)
 
 
+def check_token():
+    """Ask NASA for one small file and fail fast if the token is not accepted."""
+    listing = "https://ladsweb.modaps.eosdis.nasa.gov/archive/allData/5200/VNP46A3/2025/274.json"
+    files = json.load(urllib.request.urlopen(listing))
+    files = files.get("content", files) if isinstance(files, dict) else files
+    target = next(f["downloadsLink"] for f in files if "h10v07" in f["name"])
+    req = urllib.request.Request(target, headers={"Authorization": f"Bearer {TOKEN}"}, method="GET")
+    with urllib.request.urlopen(req) as r:
+        kind = r.headers.get("Content-Type", "")
+        head = r.read(8)
+    if "html" in kind or not head.startswith(b"\x89HDF"):
+        sys.exit("NASA did not accept the token (it sent back a web page, not data). "
+                 "Log in once at https://ladsweb.modaps.eosdis.nasa.gov with your Earthdata account, "
+                 "then generate a new token and update the NASA_TOKEN secret.")
+    print("NASA token accepted.", flush=True)
+
+
 def months(a: dt.date, b: dt.date):
     d = a.replace(day=1)
     while d <= b:
@@ -105,9 +122,22 @@ def run_daily(g):
         try:
             parts.append(zonal(g, "VNP46A2", dates, DAILY_VAR))
             print(f"daily {m:%Y-%m}: {len(dates)} days", flush=True)
+        except Exception as e:
+            if "token" in str(e).lower():
+                raise  # a bad token will fail every request, so stop now
+            # NASA is missing some days; fall back to one day at a time and skip the gaps.
+            print(f"daily {m:%Y-%m}: batch failed ({e}); trying day by day", flush=True)
+            for d in dates:
+                try:
+                    parts.append(zonal(g, "VNP46A2", [d], DAILY_VAR))
+                except Exception as e2:
+                    if "token" in str(e2).lower():
+                        raise
+                    print(f"  skipped {d}: {str(e2)[:120]}", flush=True)
+        if parts:
             pd.concat(parts).to_csv(out, index=False)  # save as we go
-        except Exception as e:  # a missing tile or a NASA outage should not stop the run
-            print(f"daily {m:%Y-%m} failed: {e}", flush=True)
+    if not out.exists():
+        sys.exit("No daily data was downloaded.")
 
 
 def run_monthly(g):
@@ -119,12 +149,15 @@ def run_monthly(g):
         df.to_csv(out, index=False)
         print(f"monthly: {len(dates)} months", flush=True)
     except Exception as e:
+        if "token" in str(e).lower():
+            sys.exit(f"NASA rejected the token: {e}")
         print(f"monthly failed: {e}", flush=True)
 
 
 if __name__ == "__main__":
     if not TOKEN:
         sys.exit("NASA_TOKEN is not set. Add it as a repository secret.")
+    check_token()
     g = parishes()
     print("parishes:", sorted(g.parish), flush=True)
     which = sys.argv[1] if len(sys.argv) > 1 else "all"
