@@ -1,0 +1,6 @@
+blackmarblepy>=2026.6.1
+exactextract>=0.2
+rioxarray
+geopandas
+pandas
+numpy
