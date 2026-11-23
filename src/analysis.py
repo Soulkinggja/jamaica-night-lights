@@ -31,10 +31,24 @@ def daily():
     return d
 
 
-def first_day_at(sub, level):
-    after = sub[sub.days_since_landfall >= 1]
-    hit = after[after.ratio_7d >= level]
-    return int(hit.days_since_landfall.iloc[0]) if len(hit) else np.nan
+def first_day_at(sub, level, hold=7):
+    """First day after the low point from which the smoothed share stays at or above
+    level for `hold` days in a row. Starting from the low point stops the pre-storm
+    days inside the centred window counting as recovery."""
+    post = sub[(sub.days_since_landfall >= 1)].sort_values("days_since_landfall")
+    early = post[post.days_since_landfall <= 30]
+    if early.ratio_7d.dropna().empty:
+        return np.nan
+    trough = int(early.loc[early.ratio_7d.idxmin(), "days_since_landfall"])
+    after = post[post.days_since_landfall >= trough]
+    ok = (after.ratio_7d >= level).astype(int).values
+    days = after.days_since_landfall.values
+    run = 0
+    for i, v in enumerate(ok):
+        run = run + 1 if v else 0
+        if run == hold:
+            return int(days[i - hold + 1])
+    return np.nan
 
 
 def summarise(d):
